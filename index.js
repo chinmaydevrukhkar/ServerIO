@@ -15,108 +15,130 @@ app.use(express.json());
 
 io.on('connection', (socket)=>{
     console.log("connected");
-    socket.on('createRoom', async({nickname})=>{
+    socket.on('createRoom', async ({ nickname }) => {
         console.log(nickname);
-        //room is created
-        try{
-        let room = new Room();
-        let player = {
-            socketID: socket.id,
-            nickname,
-            playerType: 'X',
-        };
-
-        room.players.push(player);
-        room.turn = player;
-
-        room = await room.save(); //save to db
-        console.log(room);
-        const roomId = room._id.toString();
-
-        socket.join(roomId);
-        // Tell our client that room has been created, go to the next page
-        io.to(roomId).emit("createRoomSuccess", room);
-        }catch(e){
+        try {
+            let room = new Room(); // Create a new room document
+            let player = {
+                socketID: socket.id,
+                nickname,
+                playerType: 'X',
+            };
+    
+            room.players.push(player);
+            room.turn = player;
+    
+            room = await room.save(); // Save to database
+            console.log(room);
+            const roomCode = room.roomCode; // Use the short roomCode
+    
+            socket.join(roomCode);
+            // Tell the client that the room has been created
+            io.to(roomCode).emit("createRoomSuccess", room);
+        } catch (e) {
             console.log(e);
         }
     });
+    
 
-    socket.on('joinRoom', async({nickname, roomId})=>{
-        try{
-            if(!roomId.match(/^[0-9a-fA-F]{24}$/)){
-                socket.emit('errorOccured', 'Please enter a valid Room ID.');
+    socket.on('joinRoom', async ({ nickname, roomCode }) => {
+        try {
+            let room = await Room.findOne({ roomCode });
+    
+            if (!room) {
+                socket.emit('errorOccurred', 'Invalid Room Code. Please check and try again.');
                 return;
             }
-            let room = await Room.findById(roomId);
-             
-            if(room.isJoin){
-                let player ={
-                    nickname,
-                    socketID: socket.id,
-                    playerType: 'O',
-                }
-                socket.join(roomId);
-                room.players.push(player);
-                room.isJoin = false;
-                room = await room.save();
-                // Tell our client that room has been created, go to the next page
-                io.to(roomId).emit("joinRoomSuccess", room);
-                io.to(roomId).emit("updatePlayers", room.players);
-                io.to(roomId).emit("updateRoom", room);
-
-
-            }else{
-                socket.emit('errorOccured', 'The game is in Progress, try again later')
+    
+            if (!room.isJoin) {
+                socket.emit('errorOccurred', 'The game is in progress. Try again later.');
+                return;
             }
-        }catch(e){
-            console.log(e);
+    
+            let player = {
+                nickname,
+                socketID: socket.id,
+                playerType: 'O',
+            };
+    
+            socket.join(roomCode);
+            room.players.push(player);
+            room.isJoin = false;
+            room = await room.save();
+    
+            // Notify clients about room updates
+            io.to(roomCode).emit("joinRoomSuccess", room);
+            io.to(roomCode).emit("updatePlayers", room.players);
+            io.to(roomCode).emit("updateRoom", room);
+    
+        } catch (e) {
+            console.error("Error joining room:", e);
+            socket.emit('errorOccurred', 'Failed to join the room. Please try again.');
         }
     });
-
-    socket.on('tap', async({index, roomId})=>{
-        try{
-            let room = await Room.findById(roomId);
-            let choice = room.turn.playerType; // X or O
-            if(room.turnIndex == 0){
-                room.turn = room.players[1];
-                room.turnIndex = 1;
-            }
-            else{
-                room.turn = room.players[0];
-                room.turnIndex = 0;
     
+    
+    socket.on('tap', async ({ index, roomCode }) => {
+        try {
+            let room = await Room.findOne({ roomCode });
+    
+            if (!room) {
+                socket.emit('errorOccurred', 'Invalid Room Code.');
+                return;
             }
+    
+            let choice = room.turn.playerType; // X or O
+    
+            // Switch turn between players
+            room.turnIndex = room.turnIndex === 0 ? 1 : 0;
+            room.turn = room.players[room.turnIndex];
+    
             room = await room.save();
-            
-            io.to(roomId).emit('tapped', {
+    
+            // Notify clients about the move
+            io.to(roomCode).emit('tapped', {
                 index,
                 choice,
                 room,
             });
     
-        }catch(e){
-            console.log(e);
+        } catch (e) {
+            console.error("Error processing tap event:", e);
+            socket.emit('errorOccurred', 'Something went wrong. Please try again.');
         }
+    });
     
-    });
-
-
-    socket.on('winner', async({winnerSocketId, roomId})=>{
-        try{
-            let room = await Room.findById(roomId);
-            let player = room.players.find((player)=> player.socketID == winnerSocketId);
-            player.points+=1;
+    
+    socket.on('winner', async ({ winnerSocketId, roomCode }) => {
+        try {
+            let room = await Room.findOne({ roomCode });
+    
+            if (!room) {
+                socket.emit('errorOccurred', 'Invalid Room Code.');
+                return;
+            }
+    
+            let player = room.players.find(player => player.socketID === winnerSocketId);
+            if (!player) {
+                socket.emit('errorOccurred', 'Winner not found.');
+                return;
+            }
+    
+            player.points = (player.points || 0) + 1;
             room = await room.save();
-            if(player.points >= room.maxRound){
-                io.to(roomId).emit('endGame', player);
+    
+            if (player.points >= room.maxRound) {
+                io.to(roomCode).emit('endGame', player);
+            } else {
+                io.to(roomCode).emit('pointIncrease', player);
             }
-            else{
-                io.to(roomId).emit('pointIncrease', player);
-            }
-        }catch(e){
-            console.log(e);
+    
+        } catch (e) {
+            console.error("Error processing winner event:", e);
+            socket.emit('errorOccurred', 'Something went wrong. Please try again.');
         }
     });
+    
     
 });
 
